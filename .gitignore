@@ -1,3 +1,9 @@
+# Vscode files
+.vscode
+
+# Build files
+Demo/CORTEX_LM3S811_GCC/gcc
+
 # Prerequisites
 *.d
 
