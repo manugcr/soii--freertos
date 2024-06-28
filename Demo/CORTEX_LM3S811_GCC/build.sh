@@ -11,3 +11,4 @@ make
 
 echo "  -> Launch QEMU"
 qemu-system-arm -machine lm3s811evb -kernel gcc/RTOSDemo.axf -serial stdio
+# qemu-system-arm -M lm3s811evb -kernel gcc/RTOSDemo.axf

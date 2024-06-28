@@ -31,16 +31,11 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "queue.h"
-#include "semphr.h"
-
-/* Demo app includes. */
-#include "integer.h"
-#include "PollQ.h"
-#include "semtest.h"
-#include "BlockQ.h"
 
 /* Delay between cycles of the 'check' task. */
-#define mainCHECK_DELAY						( ( TickType_t ) 5000 / portTICK_PERIOD_MS )
+#define mainCHECK_DELAY				( ( TickType_t ) 100 / portTICK_PERIOD_MS )		// 10 [Hz]
+#define mainTOP_DELAY 				( ( TickType_t ) 1000 / portTICK_PERIOD_MS )
+#define mainSENSOR_DELAY			( ( TickType_t ) 100 / portTICK_PERIOD_MS )
 
 /* UART configuration - note this does not use the FIFO so is not very
 efficient. */
@@ -48,75 +43,69 @@ efficient. */
 #define mainFIFO_SET				( 0x10 )
 
 /* Demo task priorities. */
-#define mainQUEUE_POLL_PRIORITY		( tskIDLE_PRIORITY + 2 )
 #define mainCHECK_TASK_PRIORITY		( tskIDLE_PRIORITY + 3 )
-#define mainSEM_TEST_PRIORITY		( tskIDLE_PRIORITY + 1 )
-#define mainBLOCK_Q_PRIORITY		( tskIDLE_PRIORITY + 2 )
 
 /* Demo board specifics. */
 #define mainPUSH_BUTTON             GPIO_PIN_4
 
 /* Misc. */
-#define mainQUEUE_SIZE				( 3 )
+#define mainQUEUE_SIZE				( 4 )
 #define mainDEBOUNCE_DELAY			( ( TickType_t ) 150 / portTICK_PERIOD_MS )
 #define mainNO_DELAY				( ( TickType_t ) 0 )
-/*
- * Configure the processor and peripherals for this demo.
- */
+#define MAX_ARRAY_VALUE				20
+#define MAX_X_AXIS					85
+#define MAX_TEMP					30
+#define MIN_TEMP					0
+
+/*---------------------------TASKS---------------------------*/
+static void vSensorTask( void *pvParameters );
+static void vAverageTask( void *pvParameters );
+static void vDisplayTask( void *pvParameters );
+
+/*-------------------------PROTOTYPES------------------------*/
 static void prvSetupHardware( void );
+void prvSetupTimer( void );
+static char* cGetCharacter( int value );
+static int iGetRow( int value );
+uint32_t uiGetRandomNumber( void );
+void vPushValueIntoArray( int array[], int value, int size );
+int iGetAverageTemperature( int array[], int size );
+void vDrawAxis( void );
+unsigned long ulGetHighFrequencyTimerTicks( void );
+void Timer0IntHandler( void );
 
-/*
- * The 'check' task, as described at the top of this file.
- */
-static void vCheckTask( void *pvParameters );
+/*--------------------------GLOBALS--------------------------*/
+UBaseType_t uxHighWaterMarkSensor;
+TaskStatus_t *pxTaskStatusArray;
+unsigned long ulHighFrequencyTimerTicks;
 
-/*
- * The task that is woken by the ISR that processes GPIO interrupts originating
- * from the push button.
- */
-static void vButtonHandlerTask( void *pvParameters );
+static int iActualTemperature = 15;
+static uint32_t rseed = 0xDEADBEEF; 
 
-/*
- * The task that controls access to the LCD.
- */
-static void vPrintTask( void *pvParameter );
+/*---------------------------QUEUES--------------------------*/
+QueueHandle_t xSensorQueue;
+QueueHandle_t xAverageQueue;
+QueueHandle_t xUARTQueue;
 
-/* String that is transmitted on the UART. */
-static char *cMessage = "Task woken by button interrupt! --- ";
-static volatile char *pcNextChar;
-
-/* The semaphore used to wake the button handler task from within the GPIO
-interrupt handler. */
-SemaphoreHandle_t xButtonSemaphore;
-
-/* The queue used to send strings to the print task for display on the LCD. */
-QueueHandle_t xPrintQueue;
-
-/*-----------------------------------------------------------*/
-
+/*----------------------------INIT---------------------------*/
 int main( void )
 {
 	/* Configure the clocks, UART and GPIO. */
 	prvSetupHardware();
 
-	/* Create the semaphore used to wake the button handler task from the GPIO
-	ISR. */
-	vSemaphoreCreateBinary( xButtonSemaphore );
-	xSemaphoreTake( xButtonSemaphore, 0 );
+	/* Create the queues used in the project. */
+	xSensorQueue = xQueueCreate( mainQUEUE_SIZE, sizeof( int ) );
+	xAverageQueue = xQueueCreate( mainQUEUE_SIZE, sizeof( int ) );
+	xUARTQueue = xQueueCreate( mainQUEUE_SIZE, sizeof( char* ) );
 
-	/* Create the queue used to pass message to vPrintTask. */
-	xPrintQueue = xQueueCreate( mainQUEUE_SIZE, sizeof( char * ) );
-
-	/* Start the standard demo tasks. */
-	vStartIntegerMathTasks( tskIDLE_PRIORITY );
-	vStartPolledQueueTasks( mainQUEUE_POLL_PRIORITY );
-	vStartSemaphoreTasks( mainSEM_TEST_PRIORITY );
-	vStartBlockingQueueTasks( mainBLOCK_Q_PRIORITY );
+	/* Error handling. */
+	if ((xSensorQueue == NULL) || (xAverageQueue == NULL) || (xUARTQueue == NULL))
+    	while (true);
 
 	/* Start the tasks defined within the file. */
-	xTaskCreate( vCheckTask, "Check", configMINIMAL_STACK_SIZE, NULL, mainCHECK_TASK_PRIORITY, NULL );
-	xTaskCreate( vButtonHandlerTask, "Status", configMINIMAL_STACK_SIZE, NULL, mainCHECK_TASK_PRIORITY + 1, NULL );
-	xTaskCreate( vPrintTask, "Print", configMINIMAL_STACK_SIZE, NULL, mainCHECK_TASK_PRIORITY - 1, NULL );
+	xTaskCreate( vSensorTask, "Sensor", configMINIMAL_STACK_SIZE, NULL, mainCHECK_TASK_PRIORITY + 1, NULL );
+	xTaskCreate( vAverageTask, "Average", configMINIMAL_STACK_SIZE, NULL, mainCHECK_TASK_PRIORITY, NULL );
+	xTaskCreate( vDisplayTask, "Display", configMINIMAL_STACK_SIZE, NULL, mainCHECK_TASK_PRIORITY - 1, NULL );
 
 	/* Start the scheduler. */
 	vTaskStartScheduler();
@@ -126,194 +115,210 @@ int main( void )
 
 	return 0;
 }
-/*-----------------------------------------------------------*/
 
-static void vCheckTask( void *pvParameters )
+/*---------------------------TASKS---------------------------*/
+static void vSensorTask( void *pvParameters ) 
 {
-portBASE_TYPE xErrorOccurred = pdFALSE;
-TickType_t xLastExecutionTime;
-const char *pcPassMessage = "PASS";
-const char *pcFailMessage = "FAIL";
+	TickType_t xLastExecutionTime = xTaskGetTickCount();
 
-	/* Initialise xLastExecutionTime so the first call to vTaskDelayUntil()
-	works correctly. */
-	xLastExecutionTime = xTaskGetTickCount();
+	/* Error handling. */
+	if (uxTaskGetStackHighWaterMark(NULL) < 1)
+		while (true);
 
-	for( ;; )
+	for(;;)
 	{
-		/* Perform this check every mainCHECK_DELAY milliseconds. */
-		vTaskDelayUntil( &xLastExecutionTime, mainCHECK_DELAY );
+		vTaskDelayUntil(&xLastExecutionTime, mainSENSOR_DELAY);
 
-		/* Has an error been found in any task? */
-
-		if( xAreIntegerMathsTaskStillRunning() != pdTRUE )
-		{
-			xErrorOccurred = pdTRUE;
-		}
-
-		if( xArePollingQueuesStillRunning() != pdTRUE )
-		{
-			xErrorOccurred = pdTRUE;
-		}
-
-		if( xAreSemaphoreTasksStillRunning() != pdTRUE )
-		{
-			xErrorOccurred = pdTRUE;
-		}
-
-		if( xAreBlockingQueuesStillRunning() != pdTRUE )
-		{
-			xErrorOccurred = pdTRUE;
-		}
-
-		/* Send either a pass or fail message.  If an error is found it is
-		never cleared again.  We do not write directly to the LCD, but instead
-		queue a message for display by the print task. */
-		if( xErrorOccurred == pdTRUE )
-		{
-			xQueueSend( xPrintQueue, &pcFailMessage, portMAX_DELAY );
-		}
+		if (uiGetRandomNumber() % 2 == 0)
+			iActualTemperature++;
 		else
-		{
-			xQueueSend( xPrintQueue, &pcPassMessage, portMAX_DELAY );
-		}
+			iActualTemperature--;
+
+		if (xQueueSend(xSensorQueue, &iActualTemperature, portMAX_DELAY) != pdTRUE)
+			while (true);
+
+		/* Error handling. */
+		if (uxTaskGetStackHighWaterMark(NULL) < 1)
+			while (true);
 	}
 }
-/*-----------------------------------------------------------*/
 
+static void vAverageTask( void *pvParameters )
+{
+	int newTemperature;
+	int averageTemperature;
+	int temperatureArray[MAX_ARRAY_VALUE] = {};
+
+	/* Error handling. */
+	if (uxTaskGetStackHighWaterMark(NULL) < 1)
+		while (true);
+
+	for(;;)
+	{
+		/* Receive the value from the sensor. */
+		xQueueReceive(xSensorQueue, &newTemperature, portMAX_DELAY);
+
+		/* Add the value to my temperature array. */
+		vPushValueIntoArray(temperatureArray, newTemperature, MAX_ARRAY_VALUE);
+
+		/* Get the new average value. */
+		averageTemperature = iGetAverageTemperature(temperatureArray, MAX_ARRAY_VALUE);
+
+		/* Send the value to the display graph. */
+		if (xQueueSend(xAverageQueue, &averageTemperature, portMAX_DELAY) != pdTRUE)
+			while (true);
+	
+		/* Error handling. */
+		if (uxTaskGetStackHighWaterMark(NULL) < 1)
+			while (true);
+	}
+}
+
+static void vDisplayTask( void *pvParameters )
+{
+	int temperatureArray[MAX_X_AXIS] = {};
+	int averageTemperature;
+
+	/* Error handling. */
+	if (uxTaskGetStackHighWaterMark(NULL) < 1)
+		while (true);
+
+	for(;;)
+	{
+		/* Receive the value from the average task. */
+		xQueueReceive(xAverageQueue, &averageTemperature, portMAX_DELAY);
+
+		/* Add the value to my temperature array. */
+		vPushValueIntoArray(temperatureArray, averageTemperature, MAX_X_AXIS);
+
+		/* Draw the graph. */
+		OSRAMClear();
+		vDrawAxis();
+
+		for (int i=0 ; i < MAX_ARRAY_VALUE ; i++)
+			OSRAMImageDraw(cGetCharacter(temperatureArray[i]), i+11, iGetRow(temperatureArray[i]), 1, 1);
+
+		/* Error handling. */
+		if (uxTaskGetStackHighWaterMark(NULL) < 1)
+			while (true);
+	}
+}
+
+
+/*---------------------------CONFIG--------------------------*/
 static void prvSetupHardware( void )
 {
-	/* Setup the PLL. */
-	SysCtlClockSet( SYSCTL_SYSDIV_10 | SYSCTL_USE_PLL | SYSCTL_OSC_MAIN | SYSCTL_XTAL_6MHZ );
-
-	/* Setup the push button. */
-	SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOC);
-    GPIODirModeSet(GPIO_PORTC_BASE, mainPUSH_BUTTON, GPIO_DIR_MODE_IN);
-	GPIOIntTypeSet( GPIO_PORTC_BASE, mainPUSH_BUTTON,GPIO_FALLING_EDGE );
-	IntPrioritySet( INT_GPIOC, configKERNEL_INTERRUPT_PRIORITY );
-	GPIOPinIntEnable( GPIO_PORTC_BASE, mainPUSH_BUTTON );
-	IntEnable( INT_GPIOC );
-
-
-
-	/* Enable the UART.  */
+	/* Setup UART */
 	SysCtlPeripheralEnable(SYSCTL_PERIPH_UART0);
-	SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);
+	UARTConfigSet(UART0_BASE, mainBAUD_RATE, (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE | UART_CONFIG_PAR_NONE));
+	UARTIntEnable(UART0_BASE, UART_INT_RX);
+	IntPrioritySet(INT_UART0, configKERNEL_INTERRUPT_PRIORITY);
+	IntEnable(INT_UART0);
 
-	/* Set GPIO A0 and A1 as peripheral function.  They are used to output the
-	UART signals. */
-	GPIODirModeSet( GPIO_PORTA_BASE, GPIO_PIN_0 | GPIO_PIN_1, GPIO_DIR_MODE_HW );
-
-	/* Configure the UART for 8-N-1 operation. */
-	UARTConfigSet( UART0_BASE, mainBAUD_RATE, UART_CONFIG_WLEN_8 | UART_CONFIG_PAR_NONE | UART_CONFIG_STOP_ONE );
-
-	/* We don't want to use the fifo.  This is for test purposes to generate
-	as many interrupts as possible. */
-	HWREG( UART0_BASE + UART_O_LCR_H ) &= ~mainFIFO_SET;
-
-	/* Enable Tx interrupts. */
-	HWREG( UART0_BASE + UART_O_IM ) |= UART_INT_TX;
-	IntPrioritySet( INT_UART0, configKERNEL_INTERRUPT_PRIORITY );
-	IntEnable( INT_UART0 );
-
-
-	/* Initialise the LCD> */
-    OSRAMInit( false );
-    OSRAMStringDraw("www.FreeRTOS.org", 0, 0);
+	/* Setup LCD */
+	OSRAMInit(false);
+	OSRAMStringDraw("www.FreeRTOS.org", 0, 0);
 	OSRAMStringDraw("LM3S811 demo", 16, 1);
 }
-/*-----------------------------------------------------------*/
 
-static void vButtonHandlerTask( void *pvParameters )
+void prvSetupTimer( void )
 {
-const char *pcInterruptMessage = "Int";
-
-	for( ;; )
-	{
-		/* Wait for a GPIO interrupt to wake this task. */
-		while( xSemaphoreTake( xButtonSemaphore, portMAX_DELAY ) != pdPASS );
-
-		/* Start the Tx of the message on the UART. */
-		UARTIntDisable( UART0_BASE, UART_INT_TX );
-		{
-			pcNextChar = cMessage;
-
-			/* Send the first character. */
-			if( !( HWREG( UART0_BASE + UART_O_FR ) & UART_FR_TXFF ) )
-			{
-				HWREG( UART0_BASE + UART_O_DR ) = *pcNextChar;
-			}
-
-			pcNextChar++;
-		}
-		UARTIntEnable(UART0_BASE, UART_INT_TX);
-
-		/* Queue a message for the print task to display on the LCD. */
-		xQueueSend( xPrintQueue, &pcInterruptMessage, portMAX_DELAY );
-
-		/* Make sure we don't process bounces. */
-		vTaskDelay( mainDEBOUNCE_DELAY );
-		xSemaphoreTake( xButtonSemaphore, mainNO_DELAY );
-	}
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0);
+	IntMasterEnable();
+	TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
+	TimerConfigure(TIMER0_BASE,TIMER_CFG_32_BIT_TIMER);
+	TimerLoadSet(TIMER0_BASE, TIMER_A, 1500);
+	TimerIntRegister(TIMER0_BASE,TIMER_A, Timer0IntHandler);
+	TimerEnable(TIMER0_BASE,TIMER_A);
 }
 
-/*-----------------------------------------------------------*/
-
-void vUART_ISR(void)
+/*----------------------------UTILS--------------------------*/
+uint32_t uiGetRandomNumber( void )
 {
-unsigned long ulStatus;
-
-	/* What caused the interrupt. */
-	ulStatus = UARTIntStatus( UART0_BASE, pdTRUE );
-
-	/* Clear the interrupt. */
-	UARTIntClear( UART0_BASE, ulStatus );
-
-	/* Was a Tx interrupt pending? */
-	if( ulStatus & UART_INT_TX )
-	{
-		/* Send the next character in the string.  We are not using the FIFO. */
-		if( *pcNextChar != 0 )
-		{
-			if( !( HWREG( UART0_BASE + UART_O_FR ) & UART_FR_TXFF ) )
-			{
-				HWREG( UART0_BASE + UART_O_DR ) = *pcNextChar;
-			}
-			pcNextChar++;
-		}
-	}
-}
-/*-----------------------------------------------------------*/
-
-void vGPIO_ISR( void )
-{
-portBASE_TYPE xHigherPriorityTaskWoken = pdFALSE;
-
-	/* Clear the interrupt. */
-	GPIOPinIntClear(GPIO_PORTC_BASE, mainPUSH_BUTTON);
-
-	/* Wake the button handler task. */
-	xSemaphoreGiveFromISR( xButtonSemaphore, &xHigherPriorityTaskWoken );
-
-	portEND_SWITCHING_ISR( xHigherPriorityTaskWoken );
-}
-/*-----------------------------------------------------------*/
-
-static void vPrintTask( void *pvParameters )
-{
-char *pcMessage;
-unsigned portBASE_TYPE uxLine = 0, uxRow = 0;
-
-	for( ;; )
-	{
-		/* Wait for a message to arrive. */
-		xQueueReceive( xPrintQueue, &pcMessage, portMAX_DELAY );
-
-		/* Write the message to the LCD. */
-		uxRow++;
-		uxLine++;
-		OSRAMClear();
-		OSRAMStringDraw( pcMessage, uxLine & 0x3f, uxRow & 0x01);
-	}
+	rseed = rseed *1103515245+12345;
+	return (uint32_t) (rseed/131072)%65536;
 }
 
+void vPushValueIntoArray( int array[], int value, int size )
+{
+	for (int i=0 ; i < size-1 ; i++)
+		array[i] = array[i+1];
+	
+	array[size-1] = value;
+}
+
+int iGetAverageTemperature( int array[], int size )
+{
+	int sum = 0;
+
+	for (int i=0 ; i < size ; i++)
+		sum += array[(size-1)-i];
+
+	return sum / size;
+}
+
+void vDrawAxis( void )
+{
+	// Y Axis
+	OSRAMImageDraw("", 9, 0, 2, 1);
+	OSRAMImageDraw("", 9, 1, 2, 1);
+
+	// X Axis
+	for (int i=0 ; i<MAX_X_AXIS ; i++)
+		OSRAMImageDraw("@", i+11, 1, 2, 1);
+
+	OSRAMImageDraw("\021\025\037",0,0,3,1);		//Numero 3
+	OSRAMImageDraw("\016\021\021\016",4,0,4,1);	//Numero 0
+	OSRAMImageDraw("8DD8",4,1,4,1);				//Numero 0 inferior
+}
+
+static char* cGetCharacter( int value )
+{
+	if (value < 2)
+		return "@";
+	else if (value < 4)
+		return "`";
+	else if (value < 8)
+		return "P";
+	else if (value < 10)
+		return "H";
+	else if (value < 12)
+		return "D";
+	else if (value < 14)
+		return "B";
+	else if (value < 16)
+		return "A";
+	else if (value < 18)
+		return "@";
+	else if (value < 20)
+		return " ";
+	else if (value < 22)
+		return "\020";
+	else if (value < 24)
+		return "\b";
+	else if (value < 26)
+		return "\004";
+	else if (value < 28)
+		return "\002";
+	else if (value <= 30)
+		return "\001";
+}
+
+static int iGetRow( int value )
+{
+	if(value > 16)
+		return 0;
+	return 1;
+}
+
+unsigned long ulGetHighFrequencyTimerTicks( void )
+{
+	return ulHighFrequencyTimerTicks;
+}
+
+/*---------------------------HANDLERS------------------------*/
+void Timer0IntHandler( void )
+{
+	TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
+	ulHighFrequencyTimerTicks++;
+}
