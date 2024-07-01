@@ -101,7 +101,33 @@ Dentro del loop de ejecucion se genera este numero aleatorio con la funcion `uiG
 
 
 ### vDisplayTask
+El Cortex M3 de la placa LM3S811 tiene un controlador de display LCD de 2 filas por 85 columnas, el cual se puede utilizar para mostrar informacion en la pantalla. Para iniciar el display se debe llamar a la funcion `OSRAMInit()` que inicializa el display y lo deja listo para ser utilizado. Y mediante las funciones `OSRAMStringDraw()` o `OSRAMImageDraw()` se puede dibujar texto o imagenes en la pantalla.
 
+El display es un poco confuso de utilizar al inicio pero basicamente se maneja enviandole una secuencia de bits que representan los pixeles de la pantalla, y se puede dibujar texto o imagenes en la pantalla. Por ejemplo para dibujar los ejes de un grafico, en la funcion `vDrawAxis()` hacemos uso de `OSRAMImageDraw()` la cual esta declarada de esta forma:
+
+```c
+OSRAMImageDraw(const unsigned char *pucImage, unsigned long ulX,
+               unsigned long ulY, unsigned long ulWidth,
+               unsigned long ulHeight)
+```
+
+Siendo `pucImage` nuestra cadena de bits a dibujar, `ulX` la posicion en el eje x, `ulY` la posicion en el eje y, `ulHeight` el ancho de la imagen.
+
+El display se separa en 2 filas horizontales y 85 columnas verticales, y cada cadena de bits representa una columna de la misma siendo el LSB la punta de la columna y el MSB la base, entonces por ejemplo si quisieramos dibujar el numero `3` en pantalla deberiamos enviar el siguiente parametro a la funcion.
+
+```c
+OSRAMImageDraw("\021\025\037", 0, 0, 3, 1);
+
+// \021 = 1000 1000         ---->       1 1 1
+// \025 = 1010 1000                     0 0 1 
+// \037 = 1111 1000                     0 1 1
+//                                      0 0 1
+//                                      1 1 1
+```
+
+Donde `\021\025\037` son octales los cuales representan una cadena de 8 bits por octal que forma el numero 3, siendo `1` encendido y `0` apagado.
+
+Para hacer el grafico de los valores de temperatura dentro del diagrama, primero se recibe el valor a graficar desde la cola de `xAverageQueue` y luego se utiliza la misma logica de dibujo, solo teniendo en cuenta si este punto deberia ir en la fila superior o inferior, y si va sobre la inferior tambien graficar de nuevo el eje X ademas del valor del grafico.
 
 ### vTopTask
 La tarea `vTopTask` es la encargada de mostrar las estadisticas de las tareas en ejecucion al estilo de comandos como `top` o `htop` en linux, para esto se utiliza la funcion `vTaskGetRunTimeStats()`, la cual nos devuelve un string con las estadisticas de las tareas, como el tiempo de ejecucion, el uso de la cpu, el uso de la memoria, etc. Esta tarea se ejecuta cada un delay dado por `mainTOP_DELAY` y utiliza `UART0` para enviar las estadisticas y mostrarlas en la consola.
