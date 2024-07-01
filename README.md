@@ -43,21 +43,18 @@ En FreeRTOS las tareas tienen los siguientes posibles estados:
 - **Suspended**: La tarea esta suspendida.
 - **Deleted**: La tarea fue eliminada.
 
-<p align="center">
-    ```mermaid
-    stateDiagram
-        [*] --> Ready : Task Created
-        Ready --> Running
-        Ready --> Suspended : vTaskSuspend()
-        Running --> Ready
-        Running --> Blocked
-        Running --> Suspended : vTaskSuspend()
-        Blocked --> Ready
-        Blocked --> Suspended : vTaskSuspend()
-        Suspended --> Ready : vTaskResume()
-    ```
-</p>
-
+```mermaid
+stateDiagram
+    [*] --> Ready : Task Created
+    Ready --> Running
+    Ready --> Suspended : vTaskSuspend()
+    Running --> Ready
+    Running --> Blocked
+    Running --> Suspended : vTaskSuspend()
+    Blocked --> Ready
+    Blocked --> Suspended : vTaskSuspend()
+    Suspended --> Ready : vTaskResume()
+```
 
 En el siguiente diagrama de flujo se puede ver la secuencia de inicializacion de las tareas y el flujo de datos entre ellas, donde se puede ver las 4 tareas creadas y como se comunican entre ellas a traves de las colas de mensajes, estas tareas son ejecutadas gracias al planificador de tareas de FreeRTOS.
 
@@ -127,6 +124,10 @@ Viendo esta salida podemos ver que el estado idle es el que mas tiempo de cpu co
 
 ## Ejemplo de ejecucion
 
+<p align="center">
+  <img src="https://github.com/manugcr/sdc_tp5/assets/20894332/cf80242f-2352-4c38-b7bb-d59006591abb"><br>
+  <em>Fig 1. Gif del programa en ejecucion.</em>
+</p>
 
 ---
 

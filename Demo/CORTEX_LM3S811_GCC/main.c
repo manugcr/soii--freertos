@@ -76,7 +76,7 @@ uint32_t uiGetRandomNumber( void );
 
 /*--------------------------GLOBALS--------------------------*/
 static int iActualTemperature = 15;
-static uint32_t rseed = 1; 
+static uint32_t rseed = 0xDEADBEEF; 
 unsigned long ulHighFrequencyTimerTicks;
 TaskStatus_t *pxTaskStatusArray;
 
@@ -497,6 +497,10 @@ void vPrintTopStats(void)
     unsigned long ulTotalRunTime;
     unsigned long ulStatsAsPercentage;
 
+	char counter[12];
+	char percentage[12];
+	char stack[12];
+
     if (pxTaskStatusArray != NULL) 
 	{
         uxArraySize = uxTaskGetSystemState(pxTaskStatusArray, uxArraySize, &ulTotalRunTime);
@@ -513,10 +517,6 @@ void vPrintTopStats(void)
             for (x = 0; x < uxArraySize; x++) 
 			{
                 ulStatsAsPercentage = pxTaskStatusArray[x].ulRunTimeCounter / ulTotalRunTime;
-
-                char counter[12];
-                char percentage[12];
-                char stack[12];
 
                 cUnsignedIntToString(pxTaskStatusArray[x].ulRunTimeCounter, counter, 10);
                 cUnsignedIntToString(ulStatsAsPercentage, percentage, 10);
