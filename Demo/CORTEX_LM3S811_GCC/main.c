@@ -56,10 +56,12 @@ static void vSensorTask( void *pvParameters );
 static void vAverageTask( void *pvParameters );
 static void vDisplayTask( void *pvParameters );
 static void vTopTask( void *pvParameters );
+static void vUARTTask( void *pvParameters );
 
 
 /*-------------------------PROTOTYPES------------------------*/
 static void prvSetupHardware( void );
+static void vDrawArrayBufferSize( int value);
 static char* cGetColumnOctal( int value );
 void prvSetupTimer( void );
 void vPushValueIntoArray( int array[], int value, int size );
@@ -76,7 +78,9 @@ uint32_t uiGetRandomNumber( void );
 
 /*--------------------------GLOBALS--------------------------*/
 static int iActualTemperature = 15;
-static uint32_t rseed = 0xDEADBEEF; 
+static uint32_t rseed = 0xEEEEAAAA; 
+static int iArrayBufferSize = 5;
+static char octalBufferSize[12];
 unsigned long ulHighFrequencyTimerTicks;
 TaskStatus_t *pxTaskStatusArray;
 
@@ -84,6 +88,7 @@ TaskStatus_t *pxTaskStatusArray;
 /*---------------------------QUEUES--------------------------*/
 QueueHandle_t xSensorQueue;
 QueueHandle_t xAverageQueue;
+QueueHandle_t xUARTQueue;
 
 
 /*----------------------------INIT---------------------------*/
@@ -95,9 +100,10 @@ int main( void )
 	/* Create the queues used in the project. */
 	xSensorQueue = xQueueCreate( mainQUEUE_SIZE, sizeof( int ) );
 	xAverageQueue = xQueueCreate( mainQUEUE_SIZE, sizeof( int ) );
+	xUARTQueue = xQueueCreate( mainQUEUE_SIZE, sizeof( char* ) );
 
 	/* Error handling. */
-	if ((xSensorQueue == NULL) || (xAverageQueue == NULL))
+	if ((xSensorQueue == NULL) || (xAverageQueue == NULL) || (xUARTQueue == NULL))
 	{
 		OSRAMClear();
 		OSRAMStringDraw("Queue Error", 0, 0);
@@ -109,6 +115,7 @@ int main( void )
 	xTaskCreate( vAverageTask, "Average", configMINIMAL_STACK_SIZE, NULL, mainCHECK_TASK_PRIORITY, NULL );
 	xTaskCreate( vDisplayTask, "Display", configMINIMAL_STACK_SIZE, NULL, mainCHECK_TASK_PRIORITY - 1, NULL );
 	xTaskCreate( vTopTask, "Top", configMINIMAL_STACK_SIZE, NULL, mainCHECK_TASK_PRIORITY - 2, NULL );
+	xTaskCreate( vUARTTask, "Uart", configMINIMAL_STACK_SIZE, NULL, mainCHECK_TASK_PRIORITY, NULL );
 
 	/* Start the scheduler. */
 	vTaskStartScheduler();
@@ -167,7 +174,6 @@ static void vAverageTask( void *pvParameters )
 	int newTemperature;
 	int averageTemperature;
 	int temperatureArray[MAX_ARRAY_VALUE] = {};
-	int bufferSize = 5;
 
 	/* Error handling. */
 	vCheckStackOverflow();
@@ -181,7 +187,7 @@ static void vAverageTask( void *pvParameters )
 		vPushValueIntoArray(temperatureArray, newTemperature, MAX_ARRAY_VALUE);
 
 		/* Get the new average value. */
-		averageTemperature = iGetAverageTemperature(temperatureArray, bufferSize, MAX_ARRAY_VALUE);
+		averageTemperature = iGetAverageTemperature(temperatureArray, iArrayBufferSize, MAX_ARRAY_VALUE);
 
 		/* Send the value to the display graph. */
 		xQueueSend(xAverageQueue, &averageTemperature, portMAX_DELAY);
@@ -257,6 +263,38 @@ static void vTopTask( void *pvParameters )
 	}
 }
 
+/**
+ * @brief The task that handles the UART input.
+ * 
+ * It receives the new buffer size from the UART and changes the buffer size.
+ * 
+ * @param pvParameters Parameters passed to the task (not used).
+ */
+static void vUARTTask(void *pvParameters)
+{
+    int newBufferSize;
+	char rxCharBuffer[12];
+
+    while (true)
+    {
+        if (xQueueReceive(xUARTQueue, &newBufferSize, portMAX_DELAY) == pdTRUE)
+        {
+            if (newBufferSize > 0 && newBufferSize <= MAX_ARRAY_VALUE)
+            {
+                iArrayBufferSize = newBufferSize;
+
+				/* Print to the user about the new number. */
+				cUnsignedIntToString(iArrayBufferSize, rxCharBuffer, 10);
+				vSendStringToUART("New buffer size: ");
+				vSendStringToUART(rxCharBuffer);
+				vSendStringToUART("\r\n");
+            }
+            else
+                vSendStringToUART("Invalid buffer size\n");
+        }
+    }
+}
+
 
 /*---------------------------CONFIG--------------------------*/
 /**
@@ -269,6 +307,9 @@ static void prvSetupHardware( void )
 	/* Setup UART */
 	SysCtlPeripheralEnable(SYSCTL_PERIPH_UART0);
 	UARTConfigSet(UART0_BASE, mainBAUD_RATE, (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE | UART_CONFIG_PAR_NONE));
+	UARTIntEnable(UART0_BASE, UART_INT_RX);
+	IntPrioritySet(INT_UART0, configKERNEL_INTERRUPT_PRIORITY);
+	IntEnable(INT_UART0);
 
 	/* Setup LCD */
 	OSRAMInit(false);
@@ -337,7 +378,7 @@ int iGetAverageTemperature( int array[], int bufferSize, int arraySize )
 		bufferSize = arraySize;
 
 	for (int i=0 ; i < bufferSize ; i++)
-		sum += array[(arraySize-1)-i];
+		sum += array[i];
 
 	return sum / bufferSize;
 }
@@ -361,17 +402,17 @@ int iGetAverageTemperature( int array[], int bufferSize, int arraySize )
  */
 void vDrawAxis( void )
 {
-	// Y Axis
+	/* Y Axis */
 	OSRAMImageDraw("\377", 10, 0, 1, 1);
 	OSRAMImageDraw("\377", 10, 1, 1, 1);
 
-	// X Axis
+	/* X Axis */
 	for (int i=0 ; i<MAX_COLUMNS ; i++)
 		OSRAMImageDraw("\200", i+11, 1, 1, 1); 			// +11 to skip the Y Axis
 
-	OSRAMImageDraw("\021\025\037", 0, 0, 3, 1);			// Number 3
-	OSRAMImageDraw("\016\021\021\016", 4, 0, 4, 1);		// Number 0
-	OSRAMImageDraw("\070\104\104\070", 4, 1, 4, 1);		// Number 0
+	/* Draw the current value of the array size */
+	OSRAMImageDraw("\070\104\104\070", 4, 1, 4, 1);
+	vDrawArrayBufferSize(iArrayBufferSize);
 }
 
 /**
@@ -405,6 +446,50 @@ static char* cGetColumnOctal( int value )
 	else if (value < 28) 	return "\004";
 	else if (value < 29) 	return "\002";
 	else if (value <= 30)	return "\001";		// Last value of second row
+}
+
+/**
+ * @brief Draws the image representation of a number.
+ * 
+ * This function returns the octal corresponding to the number to draw.
+ * 
+ * @param value The value to draw.
+ */
+static void vDrawArrayBufferSize( int value )
+{
+	char octalValue = value + '0';
+    switch (octalValue) {			
+		case '1':
+			OSRAMImageDraw("\104\102\177\100", 4, 1, 4, 1);			// Image representation for '1'
+			return ;
+		case '2':
+			OSRAMImageDraw("\142\121\111\106", 4, 1, 4, 1);		// Image representation for '2'
+			return ;
+		case '3':
+			OSRAMImageDraw("\101\111\111\177", 4, 1, 4, 1);		// Image representation for '3'
+			return ;
+		case '4':
+			OSRAMImageDraw("\007\010\010\176", 4, 1, 4, 1);		// Image representation for '4'	
+			return ;
+		case '5':
+			OSRAMImageDraw("\047\111\111\061", 4, 1, 4, 1);		// Image representation for '5'
+			return ;
+		case '6':
+			OSRAMImageDraw("\076\111\111\062", 4, 1, 4, 1);		// Image representation for '6'
+			return ;
+		case '7':
+			OSRAMImageDraw("\001\161\015\003", 4, 1, 4, 1);		// Image representation for '7'
+			return ;
+		case '8':
+			OSRAMImageDraw("\066\111\111\066", 4, 1, 4, 1);		// Image representation for '8'
+			return ;
+		case '9':
+			OSRAMImageDraw("\046\111\111\076", 4, 1, 4, 1);		// Image representation for '9'
+			return ;
+        default:
+			OSRAMImageDraw("\177\111\105\177", 4, 1, 4, 1);		// If its invalid draw a 0.
+            return ""; 
+    }
 }
 
 /**
@@ -546,4 +631,28 @@ void Timer0IntHandler( void )
 {
 	TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
 	ulHighFrequencyTimerTicks++;
+}
+
+/**
+ * @brief The interrupt handler for the UART.
+ * 
+ * Currently it only allows single digits from 0 to 9.
+ * TO DO: Allow multiple digits.
+ */
+void vUART_ISR(void) 
+{
+    unsigned long ulStatus;
+    int rxNum;
+
+    ulStatus = UARTIntStatus(UART0_BASE, pdTRUE);
+    UARTIntClear(UART0_BASE, ulStatus);
+
+    if (ulStatus & UART_INT_RX) 
+    {
+        rxNum = UARTCharGet(UART0_BASE) - '0';
+        if (rxNum >= 0 && rxNum <= MAX_ARRAY_VALUE) 
+        {
+            xQueueSendFromISR(xUARTQueue, &rxNum, NULL);
+        }
+    }
 }
