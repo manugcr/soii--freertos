@@ -32,7 +32,7 @@ qemu-system-arm -machine lm3s811evb -kernel gcc/RTOSDemo.axf -serial stdio
 Estas flags de QEMU nos permiten emular la placa en particular que estamos utilizando, cargar nuestro binario y utilizar la consola serial para interactuar con nuestra aplicación.
 
 ## Tasks
-Para la implementación de las tareas, se crearon 4 tareas en total, una para cada requerimiento del enunciado Sensor, Filtro, Graficador y Top. La comunicación entre las tareas se realiza mediante colas de mensajes, donde cada tarea envia y recibe mensajes de otras tareas utilizando las funciones `xQueueSend()` y `xQueueReceive()`.
+Para la implementación de las tareas, se crearon 4 tareas en total, una para cada requerimiento del enunciado Sensor, Filtro, Graficador, Top y UART. La comunicación entre las tareas se realiza mediante colas de mensajes, donde cada tarea envia y recibe mensajes de otras tareas utilizando las funciones `xQueueSend()` y `xQueueReceive()`.
 
 La politica de planificacion por default de FreeRTOS es **preemptive** es decir que el planificador siempre ejecutara la tarea de mayor prioridad que este disponible, con **prioridades fijas**, utilizando **round-robin** para tareas de igual prioridad, cambiando entre ellas en cada interrupcion de reloj. Esta configuracion es modificable en el archivo `FreeRTOSConfig.h` desde la constante `configUSE_PREEMPTION`, y el **time-slicing** se puede activar desde la constante `configUSE_TIME_SLICING`.
 
@@ -69,6 +69,7 @@ flowchart TD
     E --> G[vAverageTask]
     E --> H[vDisplayTask]
     E --> I[vTopTask]
+    E --> J[vUARTTask]
 
     subgraph Sensor Task
         F --> |Sends Temperature| SensorQueue
@@ -88,11 +89,15 @@ flowchart TD
         I --> |Prints Statistics| UART
     end
 
-    classDef task fill:#f96;
-    class F,G,H,I task;
-```
+    subgraph UART Task
+        J --> |Receives| xUARTQueue
+        xUARTQueue --> |Updates| J
+    end
 
-**TO DO**: Actualizar el diagrama con el cambio de bufferSize por UART.
+    classDef task fill:#f96;
+    class F,G,H,I,J task;
+
+```
 
 ### vSensorTask
 Para la tarea del sensor, se utilizo un generador de números aleatorios, que simula la lectura de un sensor de temperatura, con una periodicidad data por la constante `mainSENSOR_DELAY` seteada a 10 [Hz]. El delay necesario para ejecutar periodicamente la tarea se logra con la funcion `vTaskDelayUntil()`, en la cual se indica el tiempo para volver a ejecutar desde la ultima vez que se llamo a la funcion.
@@ -104,7 +109,8 @@ Esta tarea es la responsable de recibir los valores de temperatura generados por
 
 Este filtro funciona como un buffer circular con una cantidad fija de valores maximos, pero se puede variar la ventana en la se toma el promedio, mediante la variable `bufferSize`, siendo por default 5. Este valor se puede cambiar en tiempo de ejecucion mediante la consola serial.
 
-**TO DO**: Implementar el cambio de `bufferSize` mediante la consola serial.
+### vUARTTask
+La tarea `vUARTTask` es la encargada de recibir el nuevo valor de `bufferSize` por la consola serial, y actualizar el valor de la variable global `bufferSize` en tiempo de ejecucion. Para recibir estos valores se hace uso de la interrupcion de UART declarada en `startup.c` la cual es implementada por el usuario. En esta interrupcion se recibe el valor de la consola serial y se envia a la cola de mensajes `xUARTQueue` para ser procesado por la tarea `vUARTTask`, donde es que se fija el nuevo valor sobre la variable global.
 
 ### vDisplayTask
 El Cortex M3 de la placa LM3S811 tiene un controlador de display LCD de 2 filas por 85 columnas, el cual se puede utilizar para mostrar informacion en la pantalla. Para iniciar el display se debe llamar a la funcion `OSRAMInit()` que inicializa el display y lo deja listo para ser utilizado. Y mediante las funciones `OSRAMStringDraw()` o `OSRAMImageDraw()` se puede dibujar texto o imagenes en la pantalla.
@@ -157,7 +163,7 @@ Viendo esta salida podemos ver que el estado idle es el que mas tiempo de cpu co
 ## Ejemplo de ejecucion
 
 <p align="center">
-  <img src="https://github.com/manugcr/sdc_tp5/assets/20894332/cf80242f-2352-4c38-b7bb-d59006591abb"><br>
+  <img src="https://github.com/manugcr/git_practice/assets/20894332/ed03cb78-2bae-480f-93bf-f069dfeb2a76"><br>
   <em>Fig 1. Gif del programa en ejecucion.</em>
 </p>
 
