@@ -92,13 +92,19 @@ flowchart TD
     class F,G,H,I task;
 ```
 
+**TO DO**: Actualizar el diagrama con el cambio de bufferSize por UART.
+
 ### vSensorTask
 Para la tarea del sensor, se utilizo un generador de números aleatorios, que simula la lectura de un sensor de temperatura, con una periodicidad data por la constante `mainSENSOR_DELAY` seteada a 10 [Hz]. El delay necesario para ejecutar periodicamente la tarea se logra con la funcion `vTaskDelayUntil()`, en la cual se indica el tiempo para volver a ejecutar desde la ultima vez que se llamo a la funcion.
 
 Dentro del loop de ejecucion se genera este numero aleatorio con la funcion `uiGetRandomNumber()`, se ajusta este nuevo valor sumandole `1` o `-1` a la temperatura anterior y se verifica que no exceda los limites dados por `MAX_TEMP` y `MIN_TEMP`. Esta nueva temperatura es enviada a la cola de mensajes `xSensorQueue` para ser procesada por la tarea del filtro.
 
 ### vAverageTask
+Esta tarea es la responsable de recibir los valores de temperatura generados por la tarea del sensor, y aplicar un filtro de ventana suavizar los valores de temperatura. Para esto se utiliza una cola de mensajes `xSensorQueue` para recibir los valores de temperatura y una cola de mensajes `xAverageQueue` para enviar los valores filtrados.
 
+Este filtro funciona como un buffer circular con una cantidad fija de valores maximos, pero se puede variar la ventana en la se toma el promedio, mediante la variable `bufferSize`, siendo por default 5. Este valor se puede cambiar en tiempo de ejecucion mediante la consola serial.
+
+**TO DO**: Implementar el cambio de `bufferSize` mediante la consola serial.
 
 ### vDisplayTask
 El Cortex M3 de la placa LM3S811 tiene un controlador de display LCD de 2 filas por 85 columnas, el cual se puede utilizar para mostrar informacion en la pantalla. Para iniciar el display se debe llamar a la funcion `OSRAMInit()` que inicializa el display y lo deja listo para ser utilizado. Y mediante las funciones `OSRAMStringDraw()` o `OSRAMImageDraw()` se puede dibujar texto o imagenes en la pantalla.
