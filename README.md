@@ -163,7 +163,7 @@ Viendo esta salida podemos ver que el estado idle es el que mas tiempo de cpu co
 ## Ejemplo de ejecucion
 
 <p align="center">
-  <img src="https://github.com/manugcr/git_practice/assets/20894332/ed03cb78-2bae-480f-93bf-f069dfeb2a76"><br>
+  <img src="https://github.com/user-attachments/assets/84e4cbb3-21cd-47a8-8e3a-73a05d0a615d"><br>
   <em>Fig 1. Gif del programa en ejecucion.</em>
 </p>
 
